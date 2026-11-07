@@ -1,5 +1,14 @@
 
 # Moonlight Web
+
+> [!NOTE]
+> **AI fork with microphone support.** This is a fork of
+> [mrcreativ3001/moonlight-web-stream](https://github.com/mrcreativ3001/moonlight-web-stream)
+> that forwards the browser microphone to a Wolf host using the Foundation Sunshine mic
+> protocol, plus a few audio/video playback fixes. The changes are kept on the
+> [`feat/microphone`](/commits/feat/microphone) branch (see [`MAINTAINING.md`](MAINTAINING.md)).
+> Upstream: **https://github.com/mrcreativ3001/moonlight-web-stream**
+
 An unofficial [Moonlight Client](https://moonlight-stream.org/) allowing you to stream your pc to the Web.
 It hosts a Web Server which will forward [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/) traffic to a Browser using the [WebRTC Api](https://webrtc.org/).
 
