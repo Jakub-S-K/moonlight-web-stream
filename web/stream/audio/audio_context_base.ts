@@ -49,6 +49,12 @@ export abstract class AudioContextBasePipe implements NodeAudioPlayer {
     }
 
     onUserInteraction(): void {
+        // Autoplay policies may create the context in a suspended state; a user gesture is the
+        // right moment to resume it so the audio actually starts playing.
+        if (this.audioContext && this.audioContext.state === "suspended") {
+            this.audioContext.resume().catch(() => { /* ignore */ })
+        }
+
         if (this.base && "onUserInteraction" in this.base && typeof this.base.onUserInteraction == "function") {
             return this.base.onUserInteraction(...arguments)
         }

@@ -92,6 +92,7 @@ export class VideoDecoderPipe implements DataVideoRenderer {
     private fps = 0
 
     private errored = false
+    private recoveryIdrPending = false
     private config: VideoDecoderConfig | null = null
     private translator: CodecStreamTranslator | null = null
     private decoder: VideoDecoder
@@ -111,10 +112,36 @@ export class VideoDecoderPipe implements DataVideoRenderer {
     }
 
     private onError(error: any) {
-        this.errored = true
-
         this.logger?.debug(`VideoDecoder has an error ${"toString" in error ? error.toString() : `${error}`}`, { type: "fatal" })
         console.error(error)
+
+        // WebCodecs closes the decoder when its error callback fires; a decoder in that state
+        // silently drops every further chunk, freezing the stream for the rest of the session.
+        // Recreate it and ask the host for a fresh IDR so playback can recover.
+        this.recreateDecoder()
+    }
+
+    private recreateDecoder() {
+        try { this.decoder.close() } catch { /* already closed by the error */ }
+
+        this.decoder = new VideoDecoder({
+            error: this.onError.bind(this),
+            output: this.onOutput.bind(this)
+        })
+
+        this.errored = false
+        this.needsKeyFrame = true
+        this.requestedIdr = false
+        this.recoveryIdrPending = true
+
+        if (this.config) {
+            try {
+                this.decoder.configure(this.config)
+                this.translator?.setBaseConfig(this.config)
+            } catch (e) {
+                this.logger?.debug(`Failed to reconfigure VideoDecoder after error: ${e}`, { type: "fatal" })
+            }
+        }
     }
 
     private onOutput(frame: VideoFrame) {
@@ -291,6 +318,12 @@ export class VideoDecoderPipe implements DataVideoRenderer {
 
     pollRequestIdr(): boolean {
         let requestIdr = false
+
+        if (this.recoveryIdrPending) {
+            // The decoder errored and was recreated; we need a key frame before feeding it again.
+            this.recoveryIdrPending = false
+            requestIdr = true
+        }
 
         const estimatedQueueDelayMs = this.decoder.decodeQueueSize * 1000 / this.fps
         if (estimatedQueueDelayMs > 200 && this.decoder.decodeQueueSize > 2) {

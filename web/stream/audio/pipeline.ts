@@ -30,12 +30,15 @@ type Pipeline = { input: string, pipes: Array<PipeStatic>, player: AudioPlayerSt
 const PIPELINES: Array<Pipeline> = [
     // Convert track -> audio_element, All Browsers
     { input: "audiotrack", pipes: [], player: AudioElementPlayer },
-    // Convert data -> audio_sample -> track (MediaStreamTrackGenerator) -> audio_element, Chromium
-    { input: "data", pipes: [DepacketizeAudioPipe, AudioDecoderPipe, AudioMediaStreamTrackGeneratorPipe], player: AudioElementPlayer },
+    // data -> pcm -> AudioContext destination. Preferred: it writes PCM straight into the
+    // AudioContext clock and explicitly trims/realigns when it falls behind, which keeps the
+    // game audio in sync with the video. The MediaStreamTrackGenerator + <audio> element path
+    // below latches onto any arrived-in-a-burst frames and keeps the added latency forever.
+    { input: "data", pipes: [DepacketizeAudioPipe, OpusAudioDecoderPipe, AudioPcmBufferPipe], player: ContextDestinationNodeAudioPlayer },
     // Convert data -> audio_sample -> audio_sample_pcm -> audio_context_element -> audio_element, Safari / Firefox
     { input: "data", pipes: [DepacketizeAudioPipe, OpusAudioDecoderPipe, AudioPcmBufferPipe, AudioContextTrackPipe], player: AudioElementPlayer },
-    // Convert data -> audio_sample -> audio_sample_pcm -> audio_context_element -> audio_element, Safari / Firefox
-    { input: "data", pipes: [DepacketizeAudioPipe, OpusAudioDecoderPipe, AudioPcmBufferPipe], player: ContextDestinationNodeAudioPlayer },
+    // Convert data -> audio_sample -> track (MediaStreamTrackGenerator) -> audio_element, Chromium
+    { input: "data", pipes: [DepacketizeAudioPipe, AudioDecoderPipe, AudioMediaStreamTrackGeneratorPipe], player: AudioElementPlayer },
 ]
 
 export function buildAudioPipeline(type: "audiotrack", settings: AudioPipelineOptions, logger?: Logger): Promise<PipelineResult<TrackAudioPlayer & AudioPlayer>>
