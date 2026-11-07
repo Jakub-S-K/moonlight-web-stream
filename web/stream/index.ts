@@ -362,6 +362,18 @@ export class Stream implements Component {
         // Create pipelines
         await this.createPipelines(connectData)
 
+        // Enable the microphone (browser -> Wolf). Requires HTTPS (secure context) and user
+        // permission. We also expose a small global so it can be toggled from the console.
+        if (this.transport?.enableMicrophone) {
+            this.transport.enableMicrophone().then(enabled => {
+                this.debugLog(`microphone enabled: ${enabled}`)
+            })
+            ;(globalThis as any).moonlightMic = {
+                enable: () => this.transport?.enableMicrophone?.(),
+                disable: () => this.transport?.disableMicrophone?.(),
+            }
+        }
+
         event = new CustomEvent("stream-info", {
             detail: {
                 type: "connectionComplete", capabilities: {

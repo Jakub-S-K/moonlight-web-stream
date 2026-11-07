@@ -36,6 +36,7 @@ pub async fn webrtc_loop(
     mut video_channel: VideoChannel,
     mut control_channel: ControlChannel,
     mut on_data_channel: mpsc::UnboundedReceiver<Arc<dyn DataChannel>>,
+    mut mic_receiver: mpsc::UnboundedReceiver<(std::time::Duration, Vec<u8>)>,
     handler: &WebRtcHandler,
 ) -> Result<(), AppError> {
     info!("started main webrtc loop");
@@ -80,6 +81,14 @@ pub async fn webrtc_loop(
 
                 if control_channel.try_add_channel(&label, &data_channel) {
                     continue;
+                }
+            }
+            Some((timestamp, frame)) = mic_receiver.recv() => {
+                // Microphone Opus frame coming from the browser. Only forward while the peer is connected.
+                if matches!(peer_state, RTCPeerConnectionState::Connected) {
+                    if !stream.send_microphone_opus_data(timestamp, &frame) {
+                        // Microphone not negotiated with the host; nothing to do.
+                    }
                 }
             }
             result = stream.drive() => {

@@ -167,8 +167,9 @@ async fn handle_ws(
         audio_config: AudioConfig::STEREO,
         gamepads_attached: ActiveGamepads::empty(),
         gamepads_persist_after_disconnect: false,
-        // TODO: mic?
-        enable_mic: false,
+        // The host (Wolf) supports the Foundation microphone extension; the client sends
+        // microphone Opus frames over the WebSocket (channel MICROPHONE) when enabled.
+        enable_mic: true,
     };
 
     // apply permissions
@@ -187,6 +188,8 @@ async fn handle_ws(
     info!(settings = ?settings, "starting stream");
 
     // start stream
+    info!(enable_mic = settings.enable_mic, "starting ws stream settings");
+
     let config = host
         .start_stream(
             app_id,
@@ -367,6 +370,26 @@ async fn ws_loop(
 
                             if let Err(err) = stream.send_raw(packet) {
                                 warn!(error = %err, "failed to send control packet");
+                            }
+                        } else if message[0] == WebSocketChannel::MICROPHONE {
+                            // Layout: [channel(1), timestamp_us(4, BE), opus frame...]
+                            static MIC_FRAME_COUNT: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(0);
+                            let mic_count = MIC_FRAME_COUNT
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if mic_count % 250 == 0 {
+                                info!(count = mic_count, len = message.len(), "received microphone frame");
+                            }
+                            if message.len() > 5 {
+                                let timestamp_us = u32::from_be_bytes([
+                                    message[1], message[2], message[3], message[4],
+                                ]);
+                                let timestamp = Duration::from_micros(timestamp_us as u64);
+                                if !stream.send_microphone_opus_data(timestamp, &message[5..]) {
+                                    trace!("microphone frame dropped (host does not support mic)");
+                                }
+                            } else {
+                                warn!(len = message.len(), "received malformed microphone frame");
                             }
                         }
                     }

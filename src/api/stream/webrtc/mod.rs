@@ -49,6 +49,7 @@ use tokio::time::sleep;
 use tokio::{select, spawn};
 use tracing::{Instrument, debug, debug_span, error, info, instrument, warn};
 use webrtc::data_channel::DataChannel;
+use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
     RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
@@ -231,6 +232,8 @@ fn create_media_engine(video_formats: &HashMap<VideoFormat, RTCRtpCodecParameter
 struct WebRtcHandler {
     on_ice_gathering_finished: Notify,
     on_data_channel_sender: mpsc::UnboundedSender<Arc<dyn DataChannel>>,
+    /// Opus frames received from the browser microphone: (timestamp, opus payload).
+    mic_sender: mpsc::UnboundedSender<(Duration, Vec<u8>)>,
     peer_state: Mutex<RTCPeerConnectionState>,
 }
 
@@ -252,6 +255,35 @@ impl PeerConnectionEventHandler for WebRtcHandler {
 
     async fn on_data_channel(&self, data_channel: Arc<dyn DataChannel>) {
         let _ = self.on_data_channel_sender.send(data_channel);
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        // The browser sends its microphone as an Opus audio track (recvonly from our side).
+        // Forward the Opus payloads to the Moonlight microphone stream, which Wolf exposes
+        // as a virtual microphone inside the game container (Foundation mic extension).
+        let mic_sender = self.mic_sender.clone();
+        spawn(async move {
+            info!("receiving remote microphone track");
+            let mut logged = false;
+            while let Some(event) = track.poll().await {
+                if let TrackRemoteEvent::OnRtpPacket(packet) = event {
+                    if !logged {
+                        info!(
+                            payload_type = packet.header.payload_type,
+                            ssrc = packet.header.ssrc,
+                            "forwarding microphone RTP packets"
+                        );
+                        logged = true;
+                    }
+                    // Opus RTP timestamps use a 48kHz clock; the mic protocol uses milliseconds.
+                    let timestamp = Duration::from_millis((packet.header.timestamp as u64) / 48);
+                    if mic_sender.send((timestamp, packet.payload.to_vec())).is_err() {
+                        break;
+                    }
+                }
+            }
+            info!("microphone track ended");
+        });
     }
 }
 
@@ -380,11 +412,14 @@ pub async fn webrtc_post(
     // Initialize senders and receivers for events
     let (on_data_channel_sender, on_data_channel) =
         mpsc::unbounded_channel::<Arc<dyn DataChannel>>();
+    // Browser microphone -> Moonlight mic stream
+    let (mic_sender, mic_receiver) = mpsc::unbounded_channel::<(Duration, Vec<u8>)>();
 
     let handler = Arc::new(WebRtcHandler {
         peer_state: Mutex::new(RTCPeerConnectionState::New),
         on_ice_gathering_finished: Notify::new(),
         on_data_channel_sender,
+        mic_sender,
     });
 
     // Create new peer
@@ -432,8 +467,10 @@ pub async fn webrtc_post(
             formats | format.into_formats()
         });
 
-    // TODO: query microphone support
-    let microphone_enabled = false;
+    // Enable the microphone: the client library will set up the Foundation mic stream
+    // (RTSP streamid=mic) when the host (Wolf) advertises support. We always enable it;
+    // audio only flows if the browser actually sends a microphone track.
+    let microphone_enabled = true;
 
     // TODO: query audio support
     let audio_config = Some(AudioConfig::STEREO);
@@ -588,6 +625,7 @@ pub async fn webrtc_post(
                 video_channel,
                 control_channel,
                 on_data_channel,
+                mic_receiver,
                 &handler,
             )
             .await
@@ -628,7 +666,7 @@ pub async fn webrtc_post(
         Session::parse(answer.sdp.as_bytes()).expect("failed to get parse sdp answer");
     let additional_answer = WebRTCSessionAnswer {
         app_name: app_title,
-        microphone: false,
+        microphone: true,
     };
     additional_answer.apply(&mut answer_sdp);
 

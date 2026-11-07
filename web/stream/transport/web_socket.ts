@@ -61,6 +61,90 @@ export class WebSocketTransport implements Transport {
     private sendMessage(message: WebSocketServerboundMessage) {
         this.ws.send(JSON.stringify(message))
     }
+
+    // -- Microphone (browser -> host), sent over the same WebSocket as the video.
+    private micStream: MediaStream | null = null
+    private micEncoder: any = null
+    private micProcessor: any = null
+    private micReader: ReadableStreamDefaultReader<any> | null = null
+
+    async enableMicrophone(): Promise<boolean> {
+        if (this.micStream) {
+            return true
+        }
+        const g = globalThis as any
+        if (typeof g.MediaStreamTrackProcessor === "undefined" || typeof g.AudioEncoder === "undefined") {
+            this.logger?.debug("microphone needs MediaStreamTrackProcessor and AudioEncoder (use Chrome/Edge)")
+            return false
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            })
+            this.micStream = stream
+            const track = stream.getAudioTracks()[0]
+
+            const processor = new g.MediaStreamTrackProcessor({ track })
+            this.micProcessor = processor
+            const reader = processor.readable.getReader()
+            this.micReader = reader
+
+            const encoder = new g.AudioEncoder({
+                output: (chunk: any) => this.sendMicChunk(chunk),
+                error: (e: any) => this.logger?.debug(`microphone encoder error: ${e}`),
+            })
+            encoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 1, bitrate: 32000 })
+            this.micEncoder = encoder
+
+            ;(async () => {
+                while (true) {
+                    const { value, done } = await reader.read()
+                    if (done) {
+                        break
+                    }
+                    encoder.encode(value)
+                    value.close()
+                }
+            })().catch(e => this.logger?.debug(`microphone pump stopped: ${e}`))
+
+            this.logger?.debug("microphone enabled")
+            return true
+        } catch (e) {
+            this.logger?.debug(`failed to enable microphone: ${e}`)
+            this.disableMicrophone()
+            return false
+        }
+    }
+
+    private sendMicChunk(chunk: any) {
+        if (this.ws.readyState !== WebSocket.OPEN) {
+            return
+        }
+        const opus = new Uint8Array(chunk.byteLength)
+        chunk.copyTo(opus)
+        // Layout: [channel(1), timestamp_us(4, BE), opus frame...]
+        const buffer = new Uint8Array(5 + opus.length)
+        buffer[0] = WebSocketChannel.MICROPHONE
+        const ts = Math.floor(chunk.timestamp ?? 0)
+        buffer[1] = (ts >>> 24) & 0xff
+        buffer[2] = (ts >>> 16) & 0xff
+        buffer[3] = (ts >>> 8) & 0xff
+        buffer[4] = ts & 0xff
+        buffer.set(opus, 5)
+        this.ws.send(buffer)
+    }
+
+    disableMicrophone(): void {
+        try { this.micEncoder?.close() } catch { /* ignore */ }
+        this.micEncoder = null
+        try { this.micReader?.cancel() } catch { /* ignore */ }
+        this.micReader = null
+        try { this.micProcessor?.close?.() } catch { /* ignore */ }
+        this.micProcessor = null
+        this.micStream?.getTracks().forEach(track => track.stop())
+        this.micStream = null
+        this.logger?.debug("microphone disabled")
+    }
     private onMessage(event: MessageEvent) {
         const data = event.data
 
@@ -248,6 +332,7 @@ export class WebSocketTransport implements Transport {
 
     private dispatchedClosed: boolean = false
     async close(): Promise<void> {
+        this.disableMicrophone()
         this.ws.close()
         if (!this.dispatchedClosed && this.onclose) {
             if (this.wasConnected) {

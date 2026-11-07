@@ -26,6 +26,10 @@ export class WebRTCTransport implements Transport {
     private peer: RTCPeerConnection
     private location: string | null = null
 
+    // Microphone (browser -> server)
+    private micSender: RTCRtpSender | null = null
+    private micStream: MediaStream | null = null
+
     constructor(api: Api, configuration: RTCConfiguration, logger?: Logger) {
         this.logger = logger
 
@@ -48,6 +52,10 @@ export class WebRTCTransport implements Transport {
         // Add Media
         this.peer.addTransceiver("video", { direction: "recvonly" })
         this.peer.addTransceiver("audio", { direction: "recvonly" })
+        // Microphone: create the sendonly transceiver up-front so the SDP always contains the
+        // microphone m-line (the actual track is attached on demand via enableMicrophone).
+        const micTransceiver = this.peer.addTransceiver("audio", { direction: "sendonly" })
+        this.micSender = micTransceiver.sender
 
         // Dummy data channel required so that the answerer knows we accept data channels
         this.peer.createDataChannel("dummy")
@@ -55,6 +63,46 @@ export class WebRTCTransport implements Transport {
 
     private sdpOfferOptions: WebRtcSessionOffer | null = null
     private sdpAnswer: WebRtcSessionAnswer | null = null
+
+    /**
+     * Ask for microphone permission and start sending it to the server. Returns whether the
+     * microphone is active. Safe to call multiple times.
+     */
+    async enableMicrophone(): Promise<boolean> {
+        if (!this.micSender) {
+            return false
+        }
+        if (this.micStream) {
+            return true
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            })
+            this.micStream = stream
+            const track = stream.getAudioTracks()[0]
+            await this.micSender.replaceTrack(track)
+            this.logger?.debug("microphone enabled")
+            return true
+        } catch (e) {
+            this.logger?.debug(`failed to enable microphone: ${e}`)
+            return false
+        }
+    }
+
+    disableMicrophone(): void {
+        if (!this.micSender) {
+            return
+        }
+        this.micSender.replaceTrack(null)
+        this.micStream?.getTracks().forEach(track => track.stop())
+        this.micStream = null
+        this.logger?.debug("microphone disabled")
+    }
 
     async createOffer(options: TransportOptions): Promise<string> {
         this.logger?.debug("Creating webrtc offer")
@@ -276,6 +324,9 @@ export class WebRTCTransport implements Transport {
     }
 
     async close(): Promise<void> {
+        // Stop the microphone if it's active
+        this.disableMicrophone()
+
         // Close the peer
         this.peer.close()
 

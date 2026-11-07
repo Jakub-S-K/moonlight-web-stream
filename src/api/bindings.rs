@@ -431,6 +431,7 @@ ts_consts!(
     pub const CONTROL: u8 = 0;
     pub const VIDEO: u8 = 1;
     pub const AUDIO: u8 = 2;
+    pub const MICROPHONE: u8 = 3;
 );
 
 #[derive(Serialize, Deserialize, Debug, TS)]

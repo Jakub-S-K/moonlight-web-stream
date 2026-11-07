@@ -56,6 +56,10 @@ export interface Transport {
     setAudioPipeline(type: "audiotrack", pipeline: (TrackAudioPlayer & AudioPlayer)): Promise<void>
     setAudioPipeline(type: "data", pipeline: (DataPipe & AudioPlayer)): Promise<void>
 
+    // -- Optional microphone (browser -> host). Only the WebRTC transport implements this.
+    enableMicrophone?(): Promise<boolean>
+    disableMicrophone?(): void
+
     getStats(): Promise<Record<string, StatValue>>
 }
 
