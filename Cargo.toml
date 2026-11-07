@@ -71,3 +71,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 too_many_arguments = "allow"
 unwrap_used = "warn"
 todo = "warn"
+
+[patch."https://github.com/MrCreativ3001/moonlight-common-rust.git"]
+moonlight-common = { path = "vendor/moonlight-common-rust" }
