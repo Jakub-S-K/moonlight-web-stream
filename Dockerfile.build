@@ -1,0 +1,54 @@
+# Build image for moonlight-web-stream (source build, x86_64).
+# Produces a runnable image with the web-server binary + static frontend.
+# Build from the repo root:  docker build -f Dockerfile.build -t moonlight-web:local .
+
+########################################################
+FROM ubuntu:24.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    curl ca-certificates build-essential pkg-config git cmake clang \
+    libssl-dev python3 unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 22 (LTS) from NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup default stable
+
+# wasm-bindgen-cli (pinned to the version used by CI)
+RUN cargo install wasm-bindgen-cli --version 0.2.128 --locked
+
+# Copy source tree
+WORKDIR /src
+COPY . .
+
+# Build server, frontend (wasm + webpack)
+RUN cargo build --release
+RUN npm ci && npm run build && mv dist static
+
+########################################################
+FROM ubuntu:24.04
+ENV MOONLIGHT_WEB_PATH=/moonlight-web
+RUN groupadd -r moonlight && useradd -r -g moonlight -d ${MOONLIGHT_WEB_PATH} -s /sbin/nologin moonlight
+WORKDIR ${MOONLIGHT_WEB_PATH}
+
+COPY --from=builder /src/target/release/web-server ./web-server
+COPY --from=builder /src/static ./static
+COPY docker/entrypoint.sh /entrypoint.sh
+
+RUN chmod +x ${MOONLIGHT_WEB_PATH}/web-server /entrypoint.sh && \
+    mkdir -p ${MOONLIGHT_WEB_PATH}/server && \
+    chown -R moonlight:moonlight ${MOONLIGHT_WEB_PATH}
+
+VOLUME ${MOONLIGHT_WEB_PATH}/server
+ENV WEBRTC_PORT_RANGE=40000:40100
+EXPOSE 8080 40000-40100/udp
+
+USER moonlight
+ENTRYPOINT ["/entrypoint.sh"]
